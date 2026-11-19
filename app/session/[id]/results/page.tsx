@@ -173,9 +173,20 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
           <h1 className="font-mono text-xl font-semibold">{session.title}</h1>
           <p className="text-sm text-muted-foreground">{session.stackLabel}</p>
         </div>
-        <Button asChild>
-          <Link href="/">New session</Link>
-        </Button>
+        {viewer.user ? (
+          <div className="flex gap-2">
+            <Button asChild variant="outline">
+              <Link href="/">Your trials</Link>
+            </Button>
+            <Button asChild>
+              <Link href="/new">New trial</Link>
+            </Button>
+          </div>
+        ) : (
+          <Button asChild>
+            <Link href="/">New session</Link>
+          </Button>
+        )}
       </header>
 
       {!viewer.user && <GuestNotice />}
@@ -295,7 +306,12 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
       {/* ── Progress over time (signed-in only) ── */}
       {viewer.user && (
         <section className="space-y-3">
-          <h2 className="text-sm font-semibold">Recent attempts</h2>
+          <h2 className="flex items-baseline justify-between text-sm font-semibold">
+            Recent attempts
+            <Link href="/" className="text-xs font-normal text-muted-foreground hover:underline">
+              All trials
+            </Link>
+          </h2>
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="bg-muted/40 text-left text-xs text-muted-foreground">

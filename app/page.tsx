@@ -1,23 +1,30 @@
 import Link from "next/link";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Plus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { GuestButton, SignOutButton } from "@/components/lobby/auth-buttons";
-import { LobbyForm, type LobbyConfig } from "@/components/lobby/lobby-form";
-import { getViewer } from "@/lib/auth/session";
+import { GuestButton } from "@/components/lobby/auth-buttons";
+import { LobbyForm } from "@/components/lobby/lobby-form";
+import { SignedInAs } from "@/components/lobby/signed-in-as";
+import { PageShell } from "@/components/page-shell";
+import { DOMAIN_LABEL, PACING_LABEL, TRIAL_STATE, scorePercent } from "@/lib/arena/labels";
+import { DEFAULT_CONFIG } from "@/lib/arena/stack";
+import { getViewer, type ViewerUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
+import { cn } from "@/lib/utils";
 
 // Depends on the login cookie, so it can't be prerendered.
 export const dynamic = "force-dynamic";
 
-const DEFAULT_CONFIG: LobbyConfig = { domain: "BACKEND_API", stackMode: "CORE", pacing: "SPRINT", customStack: [] };
+const TRIALS_SHOWN = 50;
 
 export default async function Home() {
   const viewer = await getViewer();
+  if (viewer.user) return <Dashboard user={viewer.user} />;
 
   // Nobody yet: pick sign in, sign up, or guest.
-  if (!viewer.user && !viewer.guestId) {
+  if (!viewer.guestId) {
     return (
-      <Shell>
+      <PageShell>
         <div className="space-y-3">
           <Button asChild size="lg" className="w-full">
             <Link href="/sign-in">Sign in</Link>
@@ -36,81 +43,124 @@ export default async function Home() {
             settings and stack.
           </p>
         </div>
-      </Shell>
+      </PageShell>
     );
   }
 
   // Guest: fresh defaults every time + the warning.
-  if (!viewer.user) {
-    return (
-      <Shell>
-        <p role="note" className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
-          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>
-            You&apos;re playing as a guest. You&apos;ll see your score at the end, but{" "}
-            <strong>you can&apos;t come back to it later</strong>. <Link href="/sign-up" className="font-medium underline">Create an account</Link>{" "}
-            to keep your scores, or <Link href="/sign-in" className="underline">sign in</Link>.
-          </span>
-        </p>
-        <LobbyForm initialConfig={DEFAULT_CONFIG} />
-      </Shell>
-    );
-  }
-
-  // Signed in: last-used settings + recent scores.
-  const { user } = viewer;
-  const initialConfig: LobbyConfig = {
-    domain: user.prefDomain ?? DEFAULT_CONFIG.domain,
-    stackMode: user.prefStackMode ?? DEFAULT_CONFIG.stackMode,
-    pacing: user.prefPacing ?? DEFAULT_CONFIG.pacing,
-    customStack: user.prefCustomStack,
-  };
-  const recent = await prisma.gradeReport.findMany({
-    where: { session: { userId: user.id } },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-    select: { sessionId: true, totalScore: true, maxScore: true, createdAt: true, session: { select: { title: true } } },
-  });
-
   return (
-    <Shell>
-      <p className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+    <PageShell>
+      <p role="note" className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+        <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span>
-          Signed in as <span className="font-medium">{user.name}</span>
+          You&apos;re playing as a guest. You&apos;ll see your score at the end, but{" "}
+          <strong>you can&apos;t come back to it later</strong>.{" "}
+          <Link href="/sign-up" className="font-medium underline">Create an account</Link> to keep your scores, or{" "}
+          <Link href="/sign-in" className="underline">sign in</Link>.
         </span>
-        <SignOutButton />
       </p>
-      <LobbyForm initialConfig={initialConfig} />
-
-      {recent.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium text-muted-foreground">Your recent attempts</h2>
-          <ul className="divide-y divide-border rounded-lg border border-border text-sm">
-            {recent.map((r) => (
-              <li key={r.sessionId}>
-                <Link href={`/session/${r.sessionId}/results`} className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-muted/40">
-                  <span className="min-w-0 truncate">{r.session.title}</span>
-                  <span className="shrink-0 font-mono tabular-nums">
-                    {r.maxScore > 0 ? Math.round((Math.max(0, r.totalScore) / r.maxScore) * 100) : 0}%
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </Shell>
+      <LobbyForm initialConfig={DEFAULT_CONFIG} />
+    </PageShell>
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+// Signed in: start a new trial, or go back to an old one.
+async function Dashboard({ user }: { user: ViewerUser }) {
+  const trials = await prisma.session.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "desc" },
+    take: TRIALS_SHOWN,
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      domain: true,
+      pacing: true,
+      stackLabel: true,
+      createdAt: true,
+      grade: { select: { totalScore: true, maxScore: true } },
+    },
+  });
+
+  // Stats over graded trials only; an unfinished one has no score yet.
+  const scores = trials.flatMap((t) => (t.grade ? [scorePercent(t.grade.totalScore, t.grade.maxScore)] : []));
+  const stats = [
+    { label: "Trials", value: String(trials.length) },
+    { label: "Average", value: scores.length ? `${Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)}%` : "—" },
+    { label: "Best", value: scores.length ? `${Math.max(...scores)}%` : "—" },
+  ];
+
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-5 p-6">
-      <div>
-        <h1 className="font-mono text-2xl font-semibold">PR Triage Arena</h1>
-        <p className="text-sm text-muted-foreground">Timed code review against a hidden answer key.</p>
-      </div>
-      {children}
-    </main>
+    <PageShell wide aside={<SignedInAs name={user.name} />}>
+      <section className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Ready for another PR?</h2>
+          <p className="text-sm text-muted-foreground">
+            {user.prefDomain
+              ? `Last time: ${DOMAIN_LABEL[user.prefDomain]} · ${PACING_LABEL[user.prefPacing ?? "SPRINT"]}. Your settings are saved.`
+              : "Pick a domain, stack and pace, then review against the clock."}
+          </p>
+        </div>
+        <Button asChild size="lg" className="shrink-0">
+          <Link href="/new">
+            <Plus aria-hidden />
+            Start a new trial
+          </Link>
+        </Button>
+      </section>
+
+      <dl className="grid grid-cols-3 gap-3">
+        {stats.map((s) => (
+          <div key={s.label} className="rounded-lg border border-border bg-card p-3">
+            <dt className="text-xs text-muted-foreground">{s.label}</dt>
+            <dd className="font-mono text-xl font-semibold tabular-nums">{s.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Your trials</h2>
+        {trials.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            No trials yet. <Link href="/new" className="font-medium text-foreground underline">Start your first one</Link>.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border rounded-lg border border-border">
+            {trials.map((t) => {
+              const state = TRIAL_STATE[t.status];
+              const href = state.to === "results" ? `/session/${t.id}/results` : `/session/${t.id}`;
+              return (
+                <li key={t.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 p-3">
+                  <div className="min-w-0 flex-1 basis-60">
+                    <Link href={href} className="block truncate font-medium hover:underline">
+                      {t.title}
+                    </Link>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {DOMAIN_LABEL[t.domain]} · {PACING_LABEL[t.pacing]} · {t.stackLabel} ·{" "}
+                      {t.createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                    </p>
+                  </div>
+                  {t.grade ? (
+                    <span className="font-mono text-lg font-semibold tabular-nums">
+                      {scorePercent(t.grade.totalScore, t.grade.maxScore)}%
+                    </span>
+                  ) : (
+                    <Badge variant="outline" className={cn(t.status === "GRADING_FAILED" && "border-red-500/50 text-red-300")}>
+                      {state.label}
+                    </Badge>
+                  )}
+                  <Button asChild variant={t.grade ? "outline" : "secondary"} size="sm">
+                    <Link href={href}>{state.action}</Link>
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {trials.length === TRIALS_SHOWN && (
+          <p className="text-xs text-muted-foreground">Showing your {TRIALS_SHOWN} most recent trials.</p>
+        )}
+      </section>
+    </PageShell>
   );
 }

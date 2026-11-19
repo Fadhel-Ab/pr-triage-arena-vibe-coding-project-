@@ -4,6 +4,9 @@ import { z } from "zod";
 
 export const MAX_CUSTOM_STACK = 6;
 
+// Lobby defaults for guests and for users who haven't played yet.
+export const DEFAULT_CONFIG = { domain: "BACKEND_API", stackMode: "CORE", pacing: "SPRINT", customStack: [] as string[] };
+
 export const STACK_SUGGESTIONS = [
   "React",
   "Next.js",
