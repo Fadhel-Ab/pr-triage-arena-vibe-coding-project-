@@ -6,6 +6,7 @@ import type { TruthSeverity, Verdict } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { highlight } from "@/lib/arena/highlight";
+import { canAccessSession, getViewer } from "@/lib/auth/session";
 import { gradeSession } from "@/lib/grading/grade-session";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,10 @@ function clock(seconds: number) {
 
 export default async function ResultsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // Before anything else: the answer key and score are only for the owner, and
+  // grading costs a model call we shouldn't make for strangers.
+  if (!(await canAccessSession(id))) notFound();
+  const viewer = await getViewer();
 
   const status = await prisma.session.findUnique({ where: { id }, select: { status: true } });
   if (!status) notFound();
@@ -134,7 +139,10 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
     })),
   );
 
-  const history = await prisma.gradeReport.findMany({
+  // Signed-in users see their own past attempts. Guests have no history (and
+  // before this filter existed, this table showed everyone's scores).
+  const history = !viewer.user ? [] : await prisma.gradeReport.findMany({
+    where: { session: { userId: viewer.user.id } },
     orderBy: { createdAt: "desc" },
     take: 10,
     select: {
@@ -169,6 +177,8 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
           <Link href="/">New session</Link>
         </Button>
       </header>
+
+      {!viewer.user && <GuestNotice />}
 
       <section className="grid gap-4 lg:grid-cols-[16rem_1fr]">
         <div className="rounded-lg border border-border bg-card p-5">
@@ -282,43 +292,58 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
         </section>
       ))}
 
-      {/* ── Progress over time ── */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Recent attempts</h2>
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 font-medium">Date</th>
-                <th className="px-3 py-2 font-medium">Domain</th>
-                <th className="px-3 py-2 font-medium">Mode</th>
-                <th className="px-3 py-2 text-right font-medium">Score</th>
-                <th className="px-3 py-2 text-right font-medium">False-positive rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((r) => (
-                <tr key={r.sessionId} className={cn("border-t border-border", r.sessionId === id && "bg-primary/5")}>
-                  <td className="px-3 py-2">
-                    <Link href={`/session/${r.sessionId}/results`} className="hover:underline">
-                      {r.createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.session.domain}</td>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    {r.session.pacing} · {r.session.stackMode}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono tabular-nums">
-                    {r.maxScore > 0 ? Math.round((Math.max(0, r.totalScore) / r.maxScore) * 100) : 0}%
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono tabular-nums">{Math.round(r.falsePositiveRate * 100)}%</td>
+      {/* ── Progress over time (signed-in only) ── */}
+      {viewer.user && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold">Recent attempts</h2>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Domain</th>
+                  <th className="px-3 py-2 font-medium">Mode</th>
+                  <th className="px-3 py-2 text-right font-medium">Score</th>
+                  <th className="px-3 py-2 text-right font-medium">False-positive rate</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {history.map((r) => (
+                  <tr key={r.sessionId} className={cn("border-t border-border", r.sessionId === id && "bg-primary/5")}>
+                    <td className="px-3 py-2">
+                      <Link href={`/session/${r.sessionId}/results`} className="hover:underline">
+                        {r.createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.session.domain}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {r.session.pacing} · {r.session.stackMode}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">
+                      {r.maxScore > 0 ? Math.round((Math.max(0, r.totalScore) / r.maxScore) * 100) : 0}%
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">{Math.round(r.falsePositiveRate * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </main>
+  );
+}
+
+function GuestNotice() {
+  return (
+    <p role="note" className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+      <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <span>
+        You played as a guest. This page only works in this browser until you close it, so you can&apos;t come back to
+        this score later. <Link href="/sign-up" className="font-medium underline">Create an account</Link> to keep your
+        history and save your settings next time.
+      </span>
+    </p>
   );
 }
 

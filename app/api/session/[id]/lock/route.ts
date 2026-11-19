@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { FIELD_CHAR_CAP, LOCK_GRACE_MS, WORD_CAP } from "@/lib/arena/pacing";
 import { fillUnanswered, getArenaView, lockAndAdvance } from "@/lib/arena/session-state";
 import type { ArenaErrorCode } from "@/lib/arena/types";
+import { canAccessSession } from "@/lib/auth/session";
 import { countWords } from "@/lib/word-cap";
 
 // Same 40-word rule as the textarea. The client cap is for UX; this one is the rule.
@@ -48,6 +49,7 @@ class LockConflict extends Error {
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!(await canAccessSession(id))) return NextResponse.json({ error: "Session not found" }, { status: 404 });
   const body = bodyZ.safeParse(await request.json().catch(() => null));
   if (!body.success) {
     return NextResponse.json({ error: "Invalid submission", issues: body.error.issues }, { status: 400 });

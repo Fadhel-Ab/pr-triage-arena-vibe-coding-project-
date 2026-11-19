@@ -7,7 +7,8 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "claim-sessions": "node scripts/claim-legacy-sessions.mjs"
   },
   "dependencies": {
     "@google/genai": "^3.1.0",

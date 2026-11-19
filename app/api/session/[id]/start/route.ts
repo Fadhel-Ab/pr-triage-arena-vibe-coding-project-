@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getArenaView } from "@/lib/arena/session-state";
+import { canAccessSession } from "@/lib/auth/session";
 
 // Starts the clock on stage 0 (brief reading). Idempotent: calling it again
 // on a started session just returns the current view.
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // 404, not 403: someone else's attempt id shouldn't even confirm it exists.
+  if (!(await canAccessSession(id))) return NextResponse.json({ error: "Session not found" }, { status: 404 });
   const now = new Date();
 
   await prisma.$transaction(async (tx) => {

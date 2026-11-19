@@ -27,8 +27,9 @@ enum Domain {
 }
 
 enum StackMode {
-  CORE // Next.js, NestJS, Express, Prisma, PostgreSQL
+  CORE // the author's stack: Next.js, NestJS, Express, Prisma, PostgreSQL
   CURVEBALL // Supabase, Drizzle, tRPC, Fastify, ...
+  CUSTOM // technologies the player picked, stored in Session.customStack
 }
 
 enum PacingMode {
@@ -84,16 +85,57 @@ enum TelemetryType {
   TAB_VISIBLE
 }
 
+// ───────────────────────────── Accounts ─────────────────────────────
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique // stored lower-cased
+  name         String
+  passwordHash String // "scrypt$<salt>$<hash>", see lib/auth/password.ts
+
+  // Last lobby settings, pre-filled on the next visit. Null = never played.
+  prefDomain      Domain?
+  prefStackMode   StackMode?
+  prefPacing      PacingMode?
+  prefCustomStack String[]    @default([])
+
+  createdAt DateTime @default(now())
+
+  sessions     Session[]
+  authSessions AuthSession[]
+}
+
+// A login. Named AuthSession because `Session` already means "one attempt".
+// The id is the SHA-256 of the cookie token, so a leaked DB row can't be
+// replayed as a cookie.
+model AuthSession {
+  id        String   @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
 // ───────────────────────────── Models ─────────────────────────────
 
 model Session {
   id     String        @id @default(cuid())
   status SessionStatus @default(READY)
 
+  // Owner: exactly one of these is set for new attempts. Attempts made before
+  // accounts existed have neither and are visible to nobody until claimed
+  // (npm run claim-sessions).
+  userId  String?
+  guestId String? // random id from the guest's browser-session cookie
+
   // Lobby config
-  domain    Domain
-  stackMode StackMode
-  pacing    PacingMode
+  domain      Domain
+  stackMode   StackMode
+  customStack String[]  @default([]) // only for stackMode = CUSTOM
+  pacing      PacingMode
 
   // Generated scenario (safe to show)
   title         String
@@ -117,6 +159,7 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  user        User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   files       GeneratedFile[]
   stages      SessionStage[]
   submissions UserSubmission[]
@@ -125,6 +168,8 @@ model Session {
 
   @@index([createdAt])
   @@index([domain, stackMode])
+  @@index([userId, createdAt])
+  @@index([guestId])
 }
 
 model SessionStage {

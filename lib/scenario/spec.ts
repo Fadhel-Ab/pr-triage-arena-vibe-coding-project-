@@ -158,11 +158,17 @@ const DOMAIN_FOCUS: Record<Domain, string> = {
     "setState / BuildContext used across an async gap, unawaited futures, tokens in SharedPreferences, offline queue replay creating duplicates, rebuild loops, a Dart client trusting a server field it should verify (include one backend file the app talks to).",
 };
 
-const STACKS: Record<StackMode, string> = {
-  CORE: "Pick from the user's core stack: Next.js App Router (route handlers, server actions), NestJS (guards, pipes, DTOs), Express middleware, Prisma ORM, PostgreSQL. For the Mobile domain use Flutter + Riverpod against a NestJS or Next.js API.",
+const STACKS: Record<Exclude<StackMode, "CUSTOM">, string> = {
+  CORE: "Pick from this core stack: Next.js App Router (route handlers, server actions), NestJS (guards, pipes, DTOs), Express middleware, Prisma ORM, PostgreSQL. For the Mobile domain use Flutter + Riverpod against a NestJS or Next.js API.",
   CURVEBALL:
     "Use a stack the user does NOT know well, so they must read unfamiliar syntax: pick a coherent combination from Supabase (supabase-js + RLS SQL policies), Drizzle ORM, tRPC routers/procedures, Fastify (hooks, route schemas), Hono, Kysely. For the Mobile domain use Flutter + supabase_flutter or drift. Use each SDK's real, current API.",
 };
+
+function stackInstruction(req: ScenarioRequest): string {
+  if (req.stackMode !== "CUSTOM") return STACKS[req.stackMode];
+  // Items are validated technology names (see lib/arena/stack.ts), never free prose.
+  return `Use the stack the user picked: ${req.customStack.join(", ")}. Build one coherent PR from these; if an item cannot fit the domain, leave it out rather than forcing it, and add only the minimum companion pieces needed (e.g. a database). Use each SDK's real, current API.`;
+}
 
 // Server-side randomness so repeated runs don't converge on the same scenario.
 const BUSINESSES = [
@@ -205,7 +211,7 @@ Line numbers: hunks are excerpts of a larger file. startLine values are realisti
 
 Grader notes: for every hunk, say what a correct answer must mention, and list generic advice that must earn zero (e.g. "add try/catch", "add logging", "memoize", "add tests", "use TypeScript types") when it does not address the actual finding.`;
 
-export type ScenarioRequest = { domain: Domain; stackMode: StackMode; pacing: PacingMode };
+export type ScenarioRequest = { domain: Domain; stackMode: StackMode; customStack: string[]; pacing: PacingMode };
 
 export function buildUserPrompt(req: ScenarioRequest, business: string): string {
   const p = PACING[req.pacing];
@@ -217,7 +223,7 @@ export function buildUserPrompt(req: ScenarioRequest, business: string): string 
 
 Business: ${business}
 Domain focus: ${req.domain} — favour defects like: ${DOMAIN_FOCUS[req.domain]}
-Stack: ${STACKS[req.stackMode]}
+Stack: ${stackInstruction(req)}
 
 Shape (hard requirements):
 - Exactly ${p.fileCount} files, each with ${p.hunksPerFile.min}-${p.hunksPerFile.max} hunks; ${p.totalHunks.min}-${p.totalHunks.max} hunks in total.

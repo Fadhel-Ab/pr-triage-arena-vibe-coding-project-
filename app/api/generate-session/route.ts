@@ -3,19 +3,43 @@ import { z } from "zod";
 import { Domain, PacingMode, StackMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { PACING } from "@/lib/arena/pacing";
+import { customStackZ } from "@/lib/arena/stack";
+import { getViewer } from "@/lib/auth/session";
 import { GENERATION_MODEL, ScenarioGenerationError, generateScenario } from "@/lib/scenario/generate";
 import { PROMPT_VERSION, lineCount } from "@/lib/scenario/spec";
 
 // Generation with thinking + up to 3 repair turns can take ~30-90s.
 export const maxDuration = 120;
 
-const bodyZ = z.object({
-  domain: z.nativeEnum(Domain),
-  stackMode: z.nativeEnum(StackMode),
-  pacing: z.nativeEnum(PacingMode),
-});
+const bodyZ = z
+  .object({
+    domain: z.nativeEnum(Domain),
+    stackMode: z.nativeEnum(StackMode),
+    customStack: customStackZ.default([]),
+    pacing: z.nativeEnum(PacingMode),
+  })
+  .refine((b) => b.stackMode !== "CUSTOM" || b.customStack.length > 0, {
+    message: "Pick at least one technology for a custom stack",
+    path: ["customStack"],
+  })
+  // The list only means something in CUSTOM mode; don't store leftovers.
+  .transform((b) => ({ ...b, customStack: b.stackMode === "CUSTOM" ? b.customStack : [] }));
+
+type Owner = { userId: string } | { guestId: string };
 
 export async function POST(request: Request) {
+  // Every attempt needs an owner, otherwise nobody could open it afterwards.
+  // Checked before the (slow, quota-limited) model call.
+  const viewer = await getViewer();
+  const owner: Owner | null = viewer.user
+    ? { userId: viewer.user.id }
+    : viewer.guestId
+      ? { guestId: viewer.guestId }
+      : null;
+  if (!owner) {
+    return NextResponse.json({ error: "Sign in or continue as a guest first." }, { status: 401 });
+  }
+
   if (!process.env.GEMINI_API_KEY) {
     console.error("generate-session: GEMINI_API_KEY is not set");
     return NextResponse.json({ error: "Server misconfigured: GEMINI_API_KEY is not set." }, { status: 500 });
@@ -28,6 +52,24 @@ export async function POST(request: Request) {
 
   const config = body.data;
 
+  // Remember the lobby settings for next time. Saved even if generation fails
+  // below, since the user still chose them. Not worth failing the request over.
+  if (viewer.user) {
+    await prisma.user
+      .update({
+        where: { id: viewer.user.id },
+        data: {
+          prefDomain: config.domain,
+          prefStackMode: config.stackMode,
+          prefPacing: config.pacing,
+          // Keep the last custom list even when switching to another mode, so
+          // switching back doesn't make them pick everything again.
+          ...(config.stackMode === "CUSTOM" ? { prefCustomStack: config.customStack } : {}),
+        },
+      })
+      .catch((error) => console.error("generate-session: saving preferences failed", error));
+  }
+
   let generated: Awaited<ReturnType<typeof generateScenario>>;
   try {
     generated = await generateScenario(config, AbortSignal.timeout(110_000));
@@ -39,7 +81,7 @@ export async function POST(request: Request) {
 
   let sessionId: string;
   try {
-    sessionId = await saveScenario(config, generated);
+    sessionId = await saveScenario(config, owner, generated);
   } catch (error) {
     console.error("generate-session: saving scenario failed", error);
     return NextResponse.json({ error: "Scenario generated but could not be saved (database error)." }, { status: 500 });
@@ -51,6 +93,7 @@ export async function POST(request: Request) {
 
 function saveScenario(
   config: z.infer<typeof bodyZ>,
+  owner: Owner,
   generated: Awaited<ReturnType<typeof generateScenario>>,
 ): Promise<string> {
   const pacing = PACING[config.pacing];
@@ -60,6 +103,7 @@ function saveScenario(
     const session = await tx.session.create({
       data: {
         ...config,
+        ...owner,
         title: scenario.title,
         prSummary: scenario.prSummary,
         stackLabel: scenario.stackLabel,
@@ -119,5 +163,7 @@ function saveScenario(
     });
 
     return session.id;
-  });
+    // The nested create is dozens of inserts over the network; Prisma's default
+    // 5s interactive-transaction timeout is too tight for a remote database (P2028).
+  }, { maxWait: 10_000, timeout: 30_000 });
 }
